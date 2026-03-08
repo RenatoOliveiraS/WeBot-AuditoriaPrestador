@@ -935,7 +935,7 @@ def exportar_relatorio_excel(report_rows: list[dict], output_path: str):
     df = df[colunas]
 
     # aba só com divergências/alertas
-    mask_sem_mov = df["status_final"].astype(str) == "SEM_MOVIMENTO"
+    mask_sem_mov = df["status_final"].astype(str) == "SEM MOVIMENTO"
     df_div = df[
         (~mask_sem_mov) & (
             (df["status_final"].astype(str) != "OK") |
@@ -1596,20 +1596,30 @@ def main():
             if d not in divergencias_completas:
                 divergencias_completas.append(d)
 
+        rpa_status_norm = normalize_text(str(rpa_row.get("Status", ""))) if rpa_row else "sem registro"
+
         print("  ALERTA FINAL:")
         if sem_movimento_rpa:
-            status_final = "SEM_MOVIMENTO"
+            status_final = "SEM MOVIMENTO"
             divergencias_finais = "-"
             print(f"    StatusFinal={status_final}")
             print("    Divergencias=-")
             print("    Observação=Empresa sem movimento conforme RPA.")
+        elif rpa_status_norm == "alerta":
+            status_final = "ALERTA"
+            divergencias_finais = ", ".join(rpa_row.get("Alertas", [])) if rpa_row and rpa_row.get("Alertas") else "RPA_STATUS_ALERTA"
+            print(f"    StatusFinal={status_final}")
+            print(f"    Divergencias={divergencias_finais}")
+            print("    Observação=Status final priorizado pelo RPA com ALERTA.")
+        elif not rpa_row:
+            status_final = "SEM REGISTRO"
+            divergencias_finais = "RPA_SEM_REGISTRO"
+            print(f"    StatusFinal={status_final}")
+            print(f"    Divergencias={divergencias_finais}")
+            print("    Observação=Status final priorizado pelo RPA sem registro.")
         else:
             if alerta["StatusFinal"] == "SEM_DADOS":
                 status_final = "DIVERGENTE"
-                if not rpa_row and "RPA_SEM_REGISTRO" not in divergencias_completas:
-                    divergencias_completas.append("RPA_SEM_REGISTRO")
-                if rpa_row and normalize_text(str(rpa_row.get("Status", ""))) != "ok" and "RPA_STATUS_ALERTA" not in divergencias_completas:
-                    divergencias_completas.append("RPA_STATUS_ALERTA")
             else:
                 status_final = "DIVERGENTE" if divergencias_completas else alerta["StatusFinal"]
 
