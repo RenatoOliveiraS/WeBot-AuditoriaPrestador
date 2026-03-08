@@ -23,6 +23,52 @@ import requests
 import unicodedata
 
 
+def load_env_file(env_path: str = ".env") -> None:
+    """
+    Carrega variáveis de ambiente a partir de um arquivo .env simples
+    sem sobrescrever variáveis já definidas no ambiente do sistema.
+    """
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+
+            os.environ.setdefault(key, value)
+
+
+def load_env_from_default_locations() -> None:
+    """Tenta carregar .env do cwd, diretório do script e diretório pai."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env"),
+    ]
+    loaded = set()
+    for env_path in candidates:
+        if env_path in loaded:
+            continue
+        loaded.add(env_path)
+        load_env_file(env_path)
+
+
+load_env_from_default_locations()
+
 # =============================================================================
 # VARIÁVEIS (depois você leva para Tkinter)
 # =============================================================================
@@ -56,27 +102,27 @@ ALIQUOTA_PIS_LP = Decimal("0.0065")   # 0,65%
 ALIQUOTA_COFINS_LP = Decimal("0.03")  # 3,00%
 
 # API Questor (sua API)
-QUESTOR_API_BASE_URL = "https://app.portalcdmcontabilidade.com.br"
-QUESTOR_API_TOKEN = "5eqdkqL1jU1VyOMFLdUMCB165ZqVXZ55QZQzemcP"  # coloque seu bearer aqui
+QUESTOR_API_BASE_URL = os.getenv("QUESTOR_API_BASE_URL", "https://app.portalcdmcontabilidade.com.br")
+QUESTOR_API_TOKEN = os.getenv("QUESTOR_API_TOKEN", "").strip()
 
 # MySQL - AxioDataBase (IM <-> CNPJ/Questor codes)
 MYSQL_AXIO = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "AxioDataBase",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_AXIO_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_AXIO_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_AXIO_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_AXIO_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_AXIO_DATABASE", "AxioDataBase"),
+    "charset": os.getenv("MYSQL_AXIO_CHARSET", "utf8mb4"),
 }
 
 # MySQL - CRM (p_crm_cdm)
 MYSQL_CRM = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "p_crm_cdm",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_CRM_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_CRM_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_CRM_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_CRM_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_CRM_DATABASE", "p_crm_cdm"),
+    "charset": os.getenv("MYSQL_CRM_CHARSET", "utf8mb4"),
 }
 
 
@@ -88,21 +134,43 @@ def get_mysql_connection(cfg: dict):
     Tenta mysql-connector-python; se não existir, tenta pymysql.
     Retorna conexão e um "kind" indicando o driver.
     """
+    required = ["host", "port", "user", "password", "database"]
+    missing = [k for k in required if str(cfg.get(k, "")).strip() == ""]
+    if missing:
+        raise RuntimeError(
+            f"Configuração MySQL incompleta para '{cfg.get('database', 'desconhecido')}'. "
+            f"Campos ausentes: {', '.join(missing)}. "
+            f"Verifique seu arquivo .env (MYSQL_*)."
+        )
+
+    import_errors = []
+    conn_errors = []
+
     try:
         import mysql.connector  # type: ignore
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            charset=cfg.get("charset", "utf8mb4"),
-            autocommit=True,
-        )
-        return conn, "mysql-connector"
-    except Exception:
+    except Exception as e:
+        import_errors.append(("mysql-connector-python", e))
+    else:
         try:
-            import pymysql  # type: ignore
+            conn = mysql.connector.connect(
+                host=cfg["host"],
+                port=cfg["port"],
+                user=cfg["user"],
+                password=cfg["password"],
+                database=cfg["database"],
+                charset=cfg.get("charset", "utf8mb4"),
+                autocommit=True,
+            )
+            return conn, "mysql-connector"
+        except Exception as e:
+            conn_errors.append(("mysql-connector-python", e))
+
+    try:
+        import pymysql  # type: ignore
+    except Exception as e:
+        import_errors.append(("pymysql", e))
+    else:
+        try:
             conn = pymysql.connect(
                 host=cfg["host"],
                 port=cfg["port"],
@@ -115,10 +183,20 @@ def get_mysql_connection(cfg: dict):
             )
             return conn, "pymysql"
         except Exception as e:
-            raise RuntimeError(
-                f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
-                f"Instale mysql-connector-python ou pymysql."
-            ) from e
+            conn_errors.append(("pymysql", e))
+
+    if conn_errors:
+        driver, err = conn_errors[0]
+        raise RuntimeError(
+            f"Não foi possível conectar no MySQL ({cfg.get('database')}) usando {driver}. "
+            f"Verifique host/porta/usuário/senha no .env. Detalhe: {err}"
+        ) from err
+
+    drivers = ", ".join(name for name, _ in import_errors) if import_errors else "mysql-connector-python ou pymysql"
+    raise RuntimeError(
+        f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
+        f"Instale um driver: {drivers}."
+    )
 
 
 def exec_mysql_query(cfg: dict, sql: str, params: Optional[list] = None) -> List[dict]:
@@ -598,8 +676,11 @@ def crm_fetch_consolidado_por_cnpj(competencia: str, cnpj_masked: str) -> Option
 # QUESTOR API - consulta consolidada por codigoempresa/codigoestab/período
 # =============================================================================
 def questor_api_fetch(codigoempresa: int, codigoestab: int, periodo_ini: str, periodo_fim: str, datafim: str) -> Optional[dict]:
+    if not QUESTOR_API_TOKEN:
+        return {"_erro_http": True, "status_code": 401, "body": "QUESTOR_API_TOKEN não configurado no ambiente."}
+
     url = f"{QUESTOR_API_BASE_URL}/consulta/nfse-retido/consolidado-com-guia"
-    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN.strip()}"}
+    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN}"}
     params = {
         "codigoempresa": codigoempresa,
         "codigoestab": codigoestab,
