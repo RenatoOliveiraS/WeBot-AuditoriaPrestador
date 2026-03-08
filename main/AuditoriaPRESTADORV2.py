@@ -606,8 +606,8 @@ def rpa_status_by_im(df: pd.DataFrame) -> Dict[str, dict]:
 def is_rpa_sem_movimento(rpa_row: Optional[dict]) -> bool:
     if not rpa_row:
         return False
-    status = normalize_text(str(rpa_row.get("Status", "")))
-    par_ok = normalize_text(str(rpa_row.get("ParOKEncontrado", "")))
+    status = normalize_text(str(rpa_row.get("Status", ""))).lower()
+    par_ok = normalize_text(str(rpa_row.get("ParOKEncontrado", ""))).lower()
     return (status == "ok") and ("sem movimento" in par_ok)
 
 
@@ -1596,7 +1596,7 @@ def main():
             if d not in divergencias_completas:
                 divergencias_completas.append(d)
 
-        rpa_status_norm = normalize_text(str(rpa_row.get("Status", ""))) if rpa_row else "sem registro"
+        rpa_status_norm = normalize_text(str(rpa_row.get("Status", ""))).lower() if rpa_row else "sem registro"
 
         print("  ALERTA FINAL:")
         if sem_movimento_rpa:
