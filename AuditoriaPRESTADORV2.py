@@ -1380,6 +1380,8 @@ def main():
                 guia_divergencias = list(diverg)
 
                 if int(apuracao_fechada) == 0:
+                    if "APURACAO_PISCOFINS_ABERTA" not in guia_divergencias:
+                        guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
                     alerta_guia_text = "APURAÇÃO ABERTA — é necessário fechar a apuração de PIS/COFINS no Questor."
                     print(f"    ALERTA_GUIA: {alerta_guia_text}")
                 else:
@@ -1391,6 +1393,11 @@ def main():
                         print(f"    ALERTA_GUIA: {alerta_guia_text}")
 
             else:
+                if "GUIA_QUESTOR_SEM_DADOS" not in guia_divergencias:
+                    guia_divergencias.append("GUIA_QUESTOR_SEM_DADOS")
+                if "APURACAO_PISCOFINS_ABERTA" not in guia_divergencias:
+                    guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
+
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
                 alerta_guia_text = "Não foi possível consultar a guia no Questor (sem dados/erro)."
                 print(f"    ALERTA_GUIA: {alerta_guia_text}")
