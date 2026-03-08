@@ -23,6 +23,52 @@ import requests
 import unicodedata
 
 
+def load_env_file(env_path: str = ".env") -> None:
+    """
+    Carrega variáveis de ambiente a partir de um arquivo .env simples
+    sem sobrescrever variáveis já definidas no ambiente do sistema.
+    """
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+
+            os.environ.setdefault(key, value)
+
+
+def load_env_from_default_locations() -> None:
+    """Tenta carregar .env do cwd, diretório do script e diretório pai."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env"),
+    ]
+    loaded = set()
+    for env_path in candidates:
+        if env_path in loaded:
+            continue
+        loaded.add(env_path)
+        load_env_file(env_path)
+
+
+load_env_from_default_locations()
+
 # =============================================================================
 # VARIÁVEIS (depois você leva para Tkinter)
 # =============================================================================
@@ -56,27 +102,27 @@ ALIQUOTA_PIS_LP = Decimal("0.0065")   # 0,65%
 ALIQUOTA_COFINS_LP = Decimal("0.03")  # 3,00%
 
 # API Questor (sua API)
-QUESTOR_API_BASE_URL = "https://app.portalcdmcontabilidade.com.br"
-QUESTOR_API_TOKEN = "5eqdkqL1jU1VyOMFLdUMCB165ZqVXZ55QZQzemcP"  # coloque seu bearer aqui
+QUESTOR_API_BASE_URL = os.getenv("QUESTOR_API_BASE_URL", "https://app.portalcdmcontabilidade.com.br")
+QUESTOR_API_TOKEN = os.getenv("QUESTOR_API_TOKEN", "").strip()
 
 # MySQL - AxioDataBase (IM <-> CNPJ/Questor codes)
 MYSQL_AXIO = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "AxioDataBase",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_AXIO_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_AXIO_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_AXIO_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_AXIO_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_AXIO_DATABASE", "AxioDataBase"),
+    "charset": os.getenv("MYSQL_AXIO_CHARSET", "utf8mb4"),
 }
 
 # MySQL - CRM (p_crm_cdm)
 MYSQL_CRM = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "p_crm_cdm",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_CRM_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_CRM_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_CRM_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_CRM_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_CRM_DATABASE", "p_crm_cdm"),
+    "charset": os.getenv("MYSQL_CRM_CHARSET", "utf8mb4"),
 }
 
 
@@ -88,21 +134,43 @@ def get_mysql_connection(cfg: dict):
     Tenta mysql-connector-python; se não existir, tenta pymysql.
     Retorna conexão e um "kind" indicando o driver.
     """
+    required = ["host", "port", "user", "password", "database"]
+    missing = [k for k in required if str(cfg.get(k, "")).strip() == ""]
+    if missing:
+        raise RuntimeError(
+            f"Configuração MySQL incompleta para '{cfg.get('database', 'desconhecido')}'. "
+            f"Campos ausentes: {', '.join(missing)}. "
+            f"Verifique seu arquivo .env (MYSQL_*)."
+        )
+
+    import_errors = []
+    conn_errors = []
+
     try:
         import mysql.connector  # type: ignore
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            charset=cfg.get("charset", "utf8mb4"),
-            autocommit=True,
-        )
-        return conn, "mysql-connector"
-    except Exception:
+    except Exception as e:
+        import_errors.append(("mysql-connector-python", e))
+    else:
         try:
-            import pymysql  # type: ignore
+            conn = mysql.connector.connect(
+                host=cfg["host"],
+                port=cfg["port"],
+                user=cfg["user"],
+                password=cfg["password"],
+                database=cfg["database"],
+                charset=cfg.get("charset", "utf8mb4"),
+                autocommit=True,
+            )
+            return conn, "mysql-connector"
+        except Exception as e:
+            conn_errors.append(("mysql-connector-python", e))
+
+    try:
+        import pymysql  # type: ignore
+    except Exception as e:
+        import_errors.append(("pymysql", e))
+    else:
+        try:
             conn = pymysql.connect(
                 host=cfg["host"],
                 port=cfg["port"],
@@ -115,10 +183,20 @@ def get_mysql_connection(cfg: dict):
             )
             return conn, "pymysql"
         except Exception as e:
-            raise RuntimeError(
-                f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
-                f"Instale mysql-connector-python ou pymysql."
-            ) from e
+            conn_errors.append(("pymysql", e))
+
+    if conn_errors:
+        driver, err = conn_errors[0]
+        raise RuntimeError(
+            f"Não foi possível conectar no MySQL ({cfg.get('database')}) usando {driver}. "
+            f"Verifique host/porta/usuário/senha no .env. Detalhe: {err}"
+        ) from err
+
+    drivers = ", ".join(name for name, _ in import_errors) if import_errors else "mysql-connector-python ou pymysql"
+    raise RuntimeError(
+        f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
+        f"Instale um driver: {drivers}."
+    )
 
 
 def exec_mysql_query(cfg: dict, sql: str, params: Optional[list] = None) -> List[dict]:
@@ -525,6 +603,13 @@ def rpa_status_by_im(df: pd.DataFrame) -> Dict[str, dict]:
         }
     return out
 
+def is_rpa_sem_movimento(rpa_row: Optional[dict]) -> bool:
+    if not rpa_row:
+        return False
+    status = normalize_text(str(rpa_row.get("Status", "")))
+    par_ok = normalize_text(str(rpa_row.get("ParOKEncontrado", "")))
+    return (status == "ok") and ("sem movimento" in par_ok)
+
 
 # =============================================================================
 # CRM p_crm_cdm (MySQL) - consulta consolidada por CNPJ/competência
@@ -598,8 +683,11 @@ def crm_fetch_consolidado_por_cnpj(competencia: str, cnpj_masked: str) -> Option
 # QUESTOR API - consulta consolidada por codigoempresa/codigoestab/período
 # =============================================================================
 def questor_api_fetch(codigoempresa: int, codigoestab: int, periodo_ini: str, periodo_fim: str, datafim: str) -> Optional[dict]:
+    if not QUESTOR_API_TOKEN:
+        return {"_erro_http": True, "status_code": 401, "body": "QUESTOR_API_TOKEN não configurado no ambiente."}
+
     url = f"{QUESTOR_API_BASE_URL}/consulta/nfse-retido/consolidado-com-guia"
-    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN.strip()}"}
+    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN}"}
     params = {
         "codigoempresa": codigoempresa,
         "codigoestab": codigoestab,
@@ -847,10 +935,13 @@ def exportar_relatorio_excel(report_rows: list[dict], output_path: str):
     df = df[colunas]
 
     # aba só com divergências/alertas
+    mask_sem_mov = df["status_final"].astype(str) == "SEM_MOVIMENTO"
     df_div = df[
-        (df["status_final"].astype(str) != "OK") |
-        (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
-        (df["rpa_status"].astype(str) != "OK")
+        (~mask_sem_mov) & (
+            (df["status_final"].astype(str) != "OK") |
+            (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
+            (df["rpa_status"].astype(str) != "OK")
+        )
     ].copy()
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -903,6 +994,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
+import calendar
 
 
 def _competencia_mm_yyyy_from_date(date_str_yyyy_mm_dd: str) -> str:
@@ -919,6 +1011,94 @@ def _validate_date_yyyy_mm_dd(date_str: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _open_date_picker(parent, target_var: tk.StringVar):
+    """Abre um calendário simples para selecionar data no formato YYYY-MM-DD."""
+    today = datetime.today()
+    raw = (target_var.get() or "").strip()
+    try:
+        current = datetime.strptime(raw, "%Y-%m-%d") if raw else today
+    except Exception:
+        current = today
+
+    state = {"year": current.year, "month": current.month}
+
+    win = tk.Toplevel(parent)
+    win.title("Selecionar data")
+    win.transient(parent)
+    win.grab_set()
+    win.resizable(False, False)
+
+    frm = ttk.Frame(win, padding=10)
+    frm.pack(fill="both", expand=True)
+
+    header = ttk.Frame(frm)
+    header.pack(fill="x", pady=(0, 8))
+
+    lbl_month = ttk.Label(header, text="", font=("Segoe UI", 10, "bold"))
+    lbl_month.pack(side="left", padx=8)
+
+    grid = ttk.Frame(frm)
+    grid.pack()
+
+    weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    for i, wd in enumerate(weekdays):
+        ttk.Label(grid, text=wd, width=4, anchor="center").grid(row=0, column=i, padx=1, pady=1)
+
+    def select_day(day: int):
+        date_text = f"{state['year']:04d}-{state['month']:02d}-{day:02d}"
+        target_var.set(date_text)
+        win.destroy()
+
+    def render_calendar():
+        for w in grid.grid_slaves():
+            info = w.grid_info()
+            if int(info.get("row", 0)) >= 1:
+                w.destroy()
+
+        lbl_month.config(text=f"{calendar.month_name[state['month']]} {state['year']}")
+        cal = calendar.Calendar(firstweekday=0)
+        weeks = cal.monthdayscalendar(state["year"], state["month"])
+
+        for r, week in enumerate(weeks, start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    ttk.Label(grid, text="", width=4).grid(row=r, column=c, padx=1, pady=1)
+                else:
+                    b = ttk.Button(grid, text=f"{day}", width=3, command=lambda d=day: select_day(d))
+                    b.grid(row=r, column=c, padx=1, pady=1)
+
+    def prev_month():
+        if state["month"] == 1:
+            state["month"] = 12
+            state["year"] -= 1
+        else:
+            state["month"] -= 1
+        render_calendar()
+
+    def next_month():
+        if state["month"] == 12:
+            state["month"] = 1
+            state["year"] += 1
+        else:
+            state["month"] += 1
+        render_calendar()
+
+    ttk.Button(header, text="◀", width=3, command=prev_month).pack(side="left")
+    ttk.Button(header, text="▶", width=3, command=next_month).pack(side="right")
+
+    footer = ttk.Frame(frm)
+    footer.pack(fill="x", pady=(8, 0))
+
+    def set_today():
+        target_var.set(datetime.today().strftime("%Y-%m-%d"))
+        win.destroy()
+
+    ttk.Button(footer, text="Hoje", command=set_today).pack(side="left")
+    ttk.Button(footer, text="Fechar", command=win.destroy).pack(side="right")
+
+    render_calendar()
 
 
 def run_ui():
@@ -1156,10 +1336,12 @@ def run_ui():
     period_frame.pack(fill="x", pady=4)
 
     ttk.Label(period_frame, text="Inicial (YYYY-MM-DD):", style="Label.TLabel", width=22).pack(side="left")
-    ttk.Entry(period_frame, textvariable=v_per_ini, width=18).pack(side="left", padx=(8, 20))
+    ttk.Entry(period_frame, textvariable=v_per_ini, width=14).pack(side="left", padx=(8, 4))
+    ttk.Button(period_frame, text="📅", width=3, command=lambda: _open_date_picker(root, v_per_ini)).pack(side="left", padx=(0, 20))
 
     ttk.Label(period_frame, text="Final (YYYY-MM-DD):", style="Label.TLabel", width=20).pack(side="left")
-    ttk.Entry(period_frame, textvariable=v_per_fim, width=18).pack(side="left", padx=(8, 0))
+    ttk.Entry(period_frame, textvariable=v_per_fim, width=14).pack(side="left", padx=(8, 4))
+    ttk.Button(period_frame, text="📅", width=3, command=lambda: _open_date_picker(root, v_per_fim)).pack(side="left", padx=(0, 0))
 
     ttk.Label(
         card,
@@ -1398,16 +1580,24 @@ def main():
 
         # >>> ALERTA FINAL
         alerta = build_alerta_final(livro_row, crm_row, questor_row)
+        sem_movimento_rpa = is_rpa_sem_movimento(rpa_row)
 
         print("  ALERTA FINAL:")
-        print(f"    StatusFinal={alerta['StatusFinal']}")
-        if alerta["Divergencias"]:
-            print(f"    Divergencias={', '.join(alerta['Divergencias'])}")
-        else:
+        if sem_movimento_rpa:
+            status_final = "SEM_MOVIMENTO"
+            divergencias_finais = "-"
+            print(f"    StatusFinal={status_final}")
             print("    Divergencias=-")
+            print("    Observação=Empresa sem movimento conforme RPA.")
+        else:
+            print(f"    StatusFinal={alerta['StatusFinal']}")
+            if alerta["Divergencias"]:
+                print(f"    Divergencias={', '.join(alerta['Divergencias'])}")
+            else:
+                print("    Divergencias=-")
 
-        status_final = alerta["StatusFinal"]
-        divergencias_finais = ", ".join(alerta["Divergencias"]) if alerta["Divergencias"] else "-"
+            status_final = alerta["StatusFinal"]
+            divergencias_finais = ", ".join(alerta["Divergencias"]) if alerta["Divergencias"] else "-"
 
         # linha para Excel (didático)
         questor_ok_for_export = (questor_row and isinstance(questor_row, dict) and not questor_row.get("_erro_http"))
