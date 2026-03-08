@@ -1442,8 +1442,6 @@ def main():
         questor_guia_pis = Decimal("0.00")
         questor_guia_cofins = Decimal("0.00")
         guia_divergencias = []
-        guia_valor_baixo_acumulo = False
-        guia_valor_baixo_total = Decimal("0.00")
 
         print("=" * 120)
         print(f"[{idx+1}/{len(df_sup)}] codigoempresa_questor={codigoempresa} codigoestab={codigoestab} | CNPJ={cnpj_masked} | {razao}")
@@ -1630,9 +1628,7 @@ def main():
             print(f"    Divergencias={divergencias_finais}")
             print("    Observação=Status final priorizado pelo RPA sem registro.")
         else:
-            if guia_valor_baixo_acumulo:
-                status_final = "ALERTA"
-            elif alerta["StatusFinal"] == "SEM_DADOS":
+            if alerta["StatusFinal"] == "SEM_DADOS":
                 status_final = "DIVERGENTE"
             else:
                 status_final = "DIVERGENTE" if divergencias_completas else alerta["StatusFinal"]
