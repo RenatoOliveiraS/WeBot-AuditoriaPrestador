@@ -1259,6 +1259,7 @@ def main():
         lp_cofins_liquido = Decimal("0.00")
         questor_guia_pis = Decimal("0.00")
         questor_guia_cofins = Decimal("0.00")
+        guia_divergencias = []
 
         print("=" * 120)
         print(f"[{idx+1}/{len(df_sup)}] codigoempresa_questor={codigoempresa} codigoestab={codigoestab} | CNPJ={cnpj_masked} | {razao}")
@@ -1376,8 +1377,11 @@ def main():
                     diverg.append("GUIA_PIS_DIVERGENTE")
                 if not diff_ok(guia_cofins, esperado_cofins, TOLERANCIA_VALOR):
                     diverg.append("GUIA_COFINS_DIVERGENTE")
+                guia_divergencias = list(diverg)
 
                 if int(apuracao_fechada) == 0:
+                    if "APURACAO_PISCOFINS_ABERTA" not in guia_divergencias:
+                        guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
                     alerta_guia_text = "APURAÇÃO ABERTA — é necessário fechar a apuração de PIS/COFINS no Questor."
                     print(f"    ALERTA_GUIA: {alerta_guia_text}")
                 else:
@@ -1389,6 +1393,11 @@ def main():
                         print(f"    ALERTA_GUIA: {alerta_guia_text}")
 
             else:
+                if "GUIA_QUESTOR_SEM_DADOS" not in guia_divergencias:
+                    guia_divergencias.append("GUIA_QUESTOR_SEM_DADOS")
+                if "APURACAO_PISCOFINS_ABERTA" not in guia_divergencias:
+                    guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
+
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
                 alerta_guia_text = "Não foi possível consultar a guia no Questor (sem dados/erro)."
                 print(f"    ALERTA_GUIA: {alerta_guia_text}")
@@ -1399,15 +1408,21 @@ def main():
         # >>> ALERTA FINAL
         alerta = build_alerta_final(livro_row, crm_row, questor_row)
 
+        divergencias_completas = list(alerta["Divergencias"])
+        for d in guia_divergencias:
+            if d not in divergencias_completas:
+                divergencias_completas.append(d)
+
+        status_final = "DIVERGENTE" if divergencias_completas else alerta["StatusFinal"]
+
         print("  ALERTA FINAL:")
-        print(f"    StatusFinal={alerta['StatusFinal']}")
-        if alerta["Divergencias"]:
-            print(f"    Divergencias={', '.join(alerta['Divergencias'])}")
+        print(f"    StatusFinal={status_final}")
+        if divergencias_completas:
+            print(f"    Divergencias={', '.join(divergencias_completas)}")
         else:
             print("    Divergencias=-")
 
-        status_final = alerta["StatusFinal"]
-        divergencias_finais = ", ".join(alerta["Divergencias"]) if alerta["Divergencias"] else "-"
+        divergencias_finais = ", ".join(divergencias_completas) if divergencias_completas else "-"
 
         # linha para Excel (didático)
         questor_ok_for_export = (questor_row and isinstance(questor_row, dict) and not questor_row.get("_erro_http"))
