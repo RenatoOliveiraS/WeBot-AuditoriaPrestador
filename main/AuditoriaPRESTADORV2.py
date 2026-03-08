@@ -23,6 +23,36 @@ import requests
 import unicodedata
 
 
+def load_env_file(env_path: str = ".env") -> None:
+    """
+    Carrega variáveis de ambiente a partir de um arquivo .env simples
+    sem sobrescrever variáveis já definidas no ambiente do sistema.
+    """
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+
+            os.environ.setdefault(key, value)
+
+
+load_env_file()
+
 # =============================================================================
 # VARIÁVEIS (depois você leva para Tkinter)
 # =============================================================================
@@ -56,27 +86,27 @@ ALIQUOTA_PIS_LP = Decimal("0.0065")   # 0,65%
 ALIQUOTA_COFINS_LP = Decimal("0.03")  # 3,00%
 
 # API Questor (sua API)
-QUESTOR_API_BASE_URL = "https://app.portalcdmcontabilidade.com.br"
-QUESTOR_API_TOKEN = "5eqdkqL1jU1VyOMFLdUMCB165ZqVXZ55QZQzemcP"  # coloque seu bearer aqui
+QUESTOR_API_BASE_URL = os.getenv("QUESTOR_API_BASE_URL", "https://app.portalcdmcontabilidade.com.br")
+QUESTOR_API_TOKEN = os.getenv("QUESTOR_API_TOKEN", "").strip()
 
 # MySQL - AxioDataBase (IM <-> CNPJ/Questor codes)
 MYSQL_AXIO = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "AxioDataBase",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_AXIO_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_AXIO_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_AXIO_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_AXIO_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_AXIO_DATABASE", "AxioDataBase"),
+    "charset": os.getenv("MYSQL_AXIO_CHARSET", "utf8mb4"),
 }
 
 # MySQL - CRM (p_crm_cdm)
 MYSQL_CRM = {
-    "host": "54.232.17.99",
-    "port": 3306,
-    "user": "Renato_Full",
-    "password": "LioN$012",  # conforme seu padrão na conversa
-    "database": "p_crm_cdm",
-    "charset": "utf8mb4",
+    "host": os.getenv("MYSQL_CRM_HOST", os.getenv("MYSQL_HOST", "")),
+    "port": int(os.getenv("MYSQL_CRM_PORT", os.getenv("MYSQL_PORT", "3306"))),
+    "user": os.getenv("MYSQL_CRM_USER", os.getenv("MYSQL_USER", "")),
+    "password": os.getenv("MYSQL_CRM_PASSWORD", os.getenv("MYSQL_PASSWORD", "")),
+    "database": os.getenv("MYSQL_CRM_DATABASE", "p_crm_cdm"),
+    "charset": os.getenv("MYSQL_CRM_CHARSET", "utf8mb4"),
 }
 
 
@@ -598,8 +628,11 @@ def crm_fetch_consolidado_por_cnpj(competencia: str, cnpj_masked: str) -> Option
 # QUESTOR API - consulta consolidada por codigoempresa/codigoestab/período
 # =============================================================================
 def questor_api_fetch(codigoempresa: int, codigoestab: int, periodo_ini: str, periodo_fim: str, datafim: str) -> Optional[dict]:
+    if not QUESTOR_API_TOKEN:
+        return {"_erro_http": True, "status_code": 401, "body": "QUESTOR_API_TOKEN não configurado no ambiente."}
+
     url = f"{QUESTOR_API_BASE_URL}/consulta/nfse-retido/consolidado-com-guia"
-    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN.strip()}"}
+    headers = {"Authorization": f"Bearer {QUESTOR_API_TOKEN}"}
     params = {
         "codigoempresa": codigoempresa,
         "codigoestab": codigoestab,
