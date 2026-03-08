@@ -1545,6 +1545,12 @@ def main():
             esperado_pis = calc["pis_liquido"]
             esperado_cofins = calc["cofins_liquido"]
 
+            guia_valor_baixo_total = (esperado_pis + esperado_cofins).quantize(Decimal("0.01"))
+            if Decimal("0.00") < guia_valor_baixo_total < Decimal("10.00"):
+                guia_valor_baixo_acumulo = True
+                if "GUIA_VALOR_BAIXO_POSSIVEL_ACUMULO" not in guia_divergencias:
+                    guia_divergencias.append("GUIA_VALOR_BAIXO_POSSIVEL_ACUMULO")
+
             if questor_ok:
                 guia_pis = to_dec(questor_row.get("guia_pis_debito"))
                 guia_cofins = to_dec(questor_row.get("guia_cofins_debito"))
@@ -1553,6 +1559,8 @@ def main():
 
                 print(f"    Guia no Questor: PIS={moeda(guia_pis)} | COFINS={moeda(guia_cofins)}")
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
+                if guia_valor_baixo_acumulo:
+                    print(f"    ALERTA_GUIA: valor total esperado da guia ({moeda(guia_valor_baixo_total)}) é maior que 0 e menor que 10. Verificar mês anterior para possível acúmulo.")
 
                 diverg = []
                 if not diff_ok(guia_pis, esperado_pis, TOLERANCIA_VALOR):
@@ -1581,6 +1589,8 @@ def main():
                     guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
 
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
+                if guia_valor_baixo_acumulo:
+                    print(f"    ALERTA_GUIA: valor total esperado da guia ({moeda(guia_valor_baixo_total)}) é maior que 0 e menor que 10. Verificar mês anterior para possível acúmulo.")
                 alerta_guia_text = "Não foi possível consultar a guia no Questor (sem dados/erro)."
                 print(f"    ALERTA_GUIA: {alerta_guia_text}")
                 if int(apuracao_fechada) == 0:
