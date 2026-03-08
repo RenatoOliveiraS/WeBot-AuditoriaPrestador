@@ -51,7 +51,23 @@ def load_env_file(env_path: str = ".env") -> None:
             os.environ.setdefault(key, value)
 
 
-load_env_file()
+def load_env_from_default_locations() -> None:
+    """Tenta carregar .env do cwd, diretório do script e diretório pai."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env"),
+    ]
+    loaded = set()
+    for env_path in candidates:
+        if env_path in loaded:
+            continue
+        loaded.add(env_path)
+        load_env_file(env_path)
+
+
+load_env_from_default_locations()
 
 # =============================================================================
 # VARIÁVEIS (depois você leva para Tkinter)
@@ -118,21 +134,43 @@ def get_mysql_connection(cfg: dict):
     Tenta mysql-connector-python; se não existir, tenta pymysql.
     Retorna conexão e um "kind" indicando o driver.
     """
+    required = ["host", "port", "user", "password", "database"]
+    missing = [k for k in required if str(cfg.get(k, "")).strip() == ""]
+    if missing:
+        raise RuntimeError(
+            f"Configuração MySQL incompleta para '{cfg.get('database', 'desconhecido')}'. "
+            f"Campos ausentes: {', '.join(missing)}. "
+            f"Verifique seu arquivo .env (MYSQL_*)."
+        )
+
+    import_errors = []
+    conn_errors = []
+
     try:
         import mysql.connector  # type: ignore
-        conn = mysql.connector.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            charset=cfg.get("charset", "utf8mb4"),
-            autocommit=True,
-        )
-        return conn, "mysql-connector"
-    except Exception:
+    except Exception as e:
+        import_errors.append(("mysql-connector-python", e))
+    else:
         try:
-            import pymysql  # type: ignore
+            conn = mysql.connector.connect(
+                host=cfg["host"],
+                port=cfg["port"],
+                user=cfg["user"],
+                password=cfg["password"],
+                database=cfg["database"],
+                charset=cfg.get("charset", "utf8mb4"),
+                autocommit=True,
+            )
+            return conn, "mysql-connector"
+        except Exception as e:
+            conn_errors.append(("mysql-connector-python", e))
+
+    try:
+        import pymysql  # type: ignore
+    except Exception as e:
+        import_errors.append(("pymysql", e))
+    else:
+        try:
             conn = pymysql.connect(
                 host=cfg["host"],
                 port=cfg["port"],
@@ -145,10 +183,20 @@ def get_mysql_connection(cfg: dict):
             )
             return conn, "pymysql"
         except Exception as e:
-            raise RuntimeError(
-                f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
-                f"Instale mysql-connector-python ou pymysql."
-            ) from e
+            conn_errors.append(("pymysql", e))
+
+    if conn_errors:
+        driver, err = conn_errors[0]
+        raise RuntimeError(
+            f"Não foi possível conectar no MySQL ({cfg.get('database')}) usando {driver}. "
+            f"Verifique host/porta/usuário/senha no .env. Detalhe: {err}"
+        ) from err
+
+    drivers = ", ".join(name for name, _ in import_errors) if import_errors else "mysql-connector-python ou pymysql"
+    raise RuntimeError(
+        f"Não foi possível conectar no MySQL ({cfg.get('database')}). "
+        f"Instale um driver: {drivers}."
+    )
 
 
 def exec_mysql_query(cfg: dict, sql: str, params: Optional[list] = None) -> List[dict]:
