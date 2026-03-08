@@ -860,6 +860,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
+import calendar
 
 
 def _competencia_mm_yyyy_from_date(date_str_yyyy_mm_dd: str) -> str:
@@ -876,6 +877,94 @@ def _validate_date_yyyy_mm_dd(date_str: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _open_date_picker(parent, target_var: tk.StringVar):
+    """Abre um calendário simples para selecionar data no formato YYYY-MM-DD."""
+    today = datetime.today()
+    raw = (target_var.get() or "").strip()
+    try:
+        current = datetime.strptime(raw, "%Y-%m-%d") if raw else today
+    except Exception:
+        current = today
+
+    state = {"year": current.year, "month": current.month}
+
+    win = tk.Toplevel(parent)
+    win.title("Selecionar data")
+    win.transient(parent)
+    win.grab_set()
+    win.resizable(False, False)
+
+    frm = ttk.Frame(win, padding=10)
+    frm.pack(fill="both", expand=True)
+
+    header = ttk.Frame(frm)
+    header.pack(fill="x", pady=(0, 8))
+
+    lbl_month = ttk.Label(header, text="", font=("Segoe UI", 10, "bold"))
+    lbl_month.pack(side="left", padx=8)
+
+    grid = ttk.Frame(frm)
+    grid.pack()
+
+    weekdays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    for i, wd in enumerate(weekdays):
+        ttk.Label(grid, text=wd, width=4, anchor="center").grid(row=0, column=i, padx=1, pady=1)
+
+    def select_day(day: int):
+        date_text = f"{state['year']:04d}-{state['month']:02d}-{day:02d}"
+        target_var.set(date_text)
+        win.destroy()
+
+    def render_calendar():
+        for w in grid.grid_slaves():
+            info = w.grid_info()
+            if int(info.get("row", 0)) >= 1:
+                w.destroy()
+
+        lbl_month.config(text=f"{calendar.month_name[state['month']]} {state['year']}")
+        cal = calendar.Calendar(firstweekday=0)
+        weeks = cal.monthdayscalendar(state["year"], state["month"])
+
+        for r, week in enumerate(weeks, start=1):
+            for c, day in enumerate(week):
+                if day == 0:
+                    ttk.Label(grid, text="", width=4).grid(row=r, column=c, padx=1, pady=1)
+                else:
+                    b = ttk.Button(grid, text=f"{day}", width=3, command=lambda d=day: select_day(d))
+                    b.grid(row=r, column=c, padx=1, pady=1)
+
+    def prev_month():
+        if state["month"] == 1:
+            state["month"] = 12
+            state["year"] -= 1
+        else:
+            state["month"] -= 1
+        render_calendar()
+
+    def next_month():
+        if state["month"] == 12:
+            state["month"] = 1
+            state["year"] += 1
+        else:
+            state["month"] += 1
+        render_calendar()
+
+    ttk.Button(header, text="◀", width=3, command=prev_month).pack(side="left")
+    ttk.Button(header, text="▶", width=3, command=next_month).pack(side="right")
+
+    footer = ttk.Frame(frm)
+    footer.pack(fill="x", pady=(8, 0))
+
+    def set_today():
+        target_var.set(datetime.today().strftime("%Y-%m-%d"))
+        win.destroy()
+
+    ttk.Button(footer, text="Hoje", command=set_today).pack(side="left")
+    ttk.Button(footer, text="Fechar", command=win.destroy).pack(side="right")
+
+    render_calendar()
 
 
 def run_ui():
@@ -1113,10 +1202,12 @@ def run_ui():
     period_frame.pack(fill="x", pady=4)
 
     ttk.Label(period_frame, text="Inicial (YYYY-MM-DD):", style="Label.TLabel", width=22).pack(side="left")
-    ttk.Entry(period_frame, textvariable=v_per_ini, width=18).pack(side="left", padx=(8, 20))
+    ttk.Entry(period_frame, textvariable=v_per_ini, width=14).pack(side="left", padx=(8, 4))
+    ttk.Button(period_frame, text="📅", width=3, command=lambda: _open_date_picker(root, v_per_ini)).pack(side="left", padx=(0, 20))
 
     ttk.Label(period_frame, text="Final (YYYY-MM-DD):", style="Label.TLabel", width=20).pack(side="left")
-    ttk.Entry(period_frame, textvariable=v_per_fim, width=18).pack(side="left", padx=(8, 0))
+    ttk.Entry(period_frame, textvariable=v_per_fim, width=14).pack(side="left", padx=(8, 4))
+    ttk.Button(period_frame, text="📅", width=3, command=lambda: _open_date_picker(root, v_per_fim)).pack(side="left", padx=(0, 0))
 
     ttk.Label(
         card,
