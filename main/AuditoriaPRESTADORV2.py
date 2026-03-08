@@ -603,6 +603,13 @@ def rpa_status_by_im(df: pd.DataFrame) -> Dict[str, dict]:
         }
     return out
 
+def is_rpa_sem_movimento(rpa_row: Optional[dict]) -> bool:
+    if not rpa_row:
+        return False
+    status = normalize_text(str(rpa_row.get("Status", "")))
+    par_ok = normalize_text(str(rpa_row.get("ParOKEncontrado", "")))
+    return (status == "ok") and ("sem movimento" in par_ok)
+
 
 # =============================================================================
 # CRM p_crm_cdm (MySQL) - consulta consolidada por CNPJ/competência
@@ -928,10 +935,13 @@ def exportar_relatorio_excel(report_rows: list[dict], output_path: str):
     df = df[colunas]
 
     # aba só com divergências/alertas
+    mask_sem_mov = df["status_final"].astype(str) == "SEM_MOVIMENTO"
     df_div = df[
-        (df["status_final"].astype(str) != "OK") |
-        (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
-        (df["rpa_status"].astype(str) != "OK")
+        (~mask_sem_mov) & (
+            (df["status_final"].astype(str) != "OK") |
+            (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
+            (df["rpa_status"].astype(str) != "OK")
+        )
     ].copy()
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
@@ -1570,16 +1580,24 @@ def main():
 
         # >>> ALERTA FINAL
         alerta = build_alerta_final(livro_row, crm_row, questor_row)
+        sem_movimento_rpa = is_rpa_sem_movimento(rpa_row)
 
         print("  ALERTA FINAL:")
-        print(f"    StatusFinal={alerta['StatusFinal']}")
-        if alerta["Divergencias"]:
-            print(f"    Divergencias={', '.join(alerta['Divergencias'])}")
-        else:
+        if sem_movimento_rpa:
+            status_final = "SEM_MOVIMENTO"
+            divergencias_finais = "-"
+            print(f"    StatusFinal={status_final}")
             print("    Divergencias=-")
+            print("    Observação=Empresa sem movimento conforme RPA.")
+        else:
+            print(f"    StatusFinal={alerta['StatusFinal']}")
+            if alerta["Divergencias"]:
+                print(f"    Divergencias={', '.join(alerta['Divergencias'])}")
+            else:
+                print("    Divergencias=-")
 
-        status_final = alerta["StatusFinal"]
-        divergencias_finais = ", ".join(alerta["Divergencias"]) if alerta["Divergencias"] else "-"
+            status_final = alerta["StatusFinal"]
+            divergencias_finais = ", ".join(alerta["Divergencias"]) if alerta["Divergencias"] else "-"
 
         # linha para Excel (didático)
         questor_ok_for_export = (questor_row and isinstance(questor_row, dict) and not questor_row.get("_erro_http"))
