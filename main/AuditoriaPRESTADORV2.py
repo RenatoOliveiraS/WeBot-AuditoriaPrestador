@@ -83,6 +83,8 @@ RPA_RELATORIO_PATH = r""
 SUPERVISOR_XLSX_PATH = r""
 
 RELATORIO_XLSX_PATH = r""
+COMPARAR_GUIAS = False
+COMPARA_GUIAS_XLSX_PATH = r""
 
 # Competência do CRM
 CRM_COMPETENCIA = ""
@@ -603,13 +605,6 @@ def rpa_status_by_im(df: pd.DataFrame) -> Dict[str, dict]:
         }
     return out
 
-def is_rpa_sem_movimento(rpa_row: Optional[dict]) -> bool:
-    if not rpa_row:
-        return False
-    status = normalize_text(str(rpa_row.get("Status", ""))).lower()
-    par_ok = normalize_text(str(rpa_row.get("ParOKEncontrado", ""))).lower()
-    return (status == "ok") and ("sem movimento" in par_ok)
-
 
 # =============================================================================
 # CRM p_crm_cdm (MySQL) - consulta consolidada por CNPJ/competência
@@ -905,7 +900,101 @@ def moeda(v: Decimal) -> str:
     # só para print didático (sem formatação BR sofisticada)
     return f"{v:.2f}"
 
-def exportar_relatorio_excel(report_rows: list[dict], output_path: str):
+def carregar_guias_por_empresa_xlsx(xlsx_path: str) -> Dict[int, Dict[str, Decimal]]:
+    df = pd.read_excel(xlsx_path, dtype=str)
+
+    col_empresa = get_col(df, ["Empresa", "Código Empresa", "Codigo Empresa", "Cod Empresa"])
+    col_imposto = get_col(df, ["Imposto", "Código Imposto", "Codigo Imposto"])
+    col_valor = get_col(df, ["Valor Débito", "Valor Debito", "Valor", "Valor Débito "])
+
+    if not col_empresa or not col_imposto or not col_valor:
+        raise RuntimeError(
+            "Não foi possível localizar as colunas obrigatórias no XLSX de comparação. "
+            "Esperado: Empresa, Imposto e Valor Débito."
+        )
+
+    out: Dict[int, Dict[str, Decimal]] = {}
+
+    for _, row in df.iterrows():
+        empresa_digits = only_digits(row.get(col_empresa, ""))
+        imposto_digits = only_digits(row.get(col_imposto, ""))
+        if not empresa_digits or not imposto_digits:
+            continue
+
+        imposto = int(imposto_digits)
+        if imposto not in (2172, 8109):
+            continue
+
+        empresa = int(empresa_digits)
+        valor = br_money_to_decimal(row.get(col_valor, ""))
+
+        if empresa not in out:
+            out[empresa] = {
+                "pis": Decimal("0.00"),
+                "cofins": Decimal("0.00"),
+            }
+
+        if imposto == 8109:
+            out[empresa]["pis"] += valor
+        elif imposto == 2172:
+            out[empresa]["cofins"] += valor
+
+    return out
+
+
+def montar_comparacao_guias(report_rows: list[dict], xlsx_path: str) -> list[dict]:
+    guias_xlsx = carregar_guias_por_empresa_xlsx(xlsx_path)
+    comparacao = []
+
+    for row in report_rows:
+        status_final_ok = str(row.get("status_final", "")).strip().upper() == "OK"
+        rpa_ok = str(row.get("rpa_status", "")).strip().upper() == "OK"
+        sem_divergencias = str(row.get("divergencias_finais", "")).strip() in ("", "-")
+        alerta_guia_ok = str(row.get("alerta_guia", "")).strip().startswith("OK")
+
+        if not (status_final_ok and rpa_ok and sem_divergencias and alerta_guia_ok):
+            continue
+
+        codigoempresa = int(str(row.get("codigoempresa_questor", "0") or "0"))
+        esperado_pis = to_dec(row.get("questor_guia_pis"))
+        esperado_cofins = to_dec(row.get("questor_guia_cofins"))
+
+        guia_xlsx = guias_xlsx.get(codigoempresa)
+        if guia_xlsx:
+            xlsx_pis = to_dec(guia_xlsx.get("pis"))
+            xlsx_cofins = to_dec(guia_xlsx.get("cofins"))
+            ok_pis = diff_ok(esperado_pis, xlsx_pis, TOLERANCIA_VALOR)
+            ok_cofins = diff_ok(esperado_cofins, xlsx_cofins, TOLERANCIA_VALOR)
+            status_comp = "OK" if (ok_pis and ok_cofins) else "DIVERGENTE"
+            obs = "-"
+            if status_comp != "OK":
+                difs = []
+                if not ok_pis:
+                    difs.append("PIS")
+                if not ok_cofins:
+                    difs.append("COFINS")
+                obs = f"Diferença em: {', '.join(difs)}"
+        else:
+            xlsx_pis = Decimal("0.00")
+            xlsx_cofins = Decimal("0.00")
+            status_comp = "SEM_DADOS_XLSX"
+            obs = "Empresa não encontrada no XLSX de comparação"
+
+        comparacao.append({
+            "codigoempresa_questor": codigoempresa,
+            "razao": row.get("razao", ""),
+            "questor_guia_pis": str(esperado_pis),
+            "xlsx_valor_pis": str(xlsx_pis),
+            "questor_guia_cofins": str(esperado_cofins),
+            "xlsx_valor_cofins": str(xlsx_cofins),
+            "status_comparacao": status_comp,
+            "obs": obs,
+        })
+
+    return comparacao
+
+
+def exportar_relatorio_excel(report_rows: list[dict], output_path: str, comparacao_rows: Optional[list[dict]] = None):
     if not report_rows:
         print("[Excel] Nenhuma linha para exportar.")
         return
@@ -935,21 +1024,30 @@ def exportar_relatorio_excel(report_rows: list[dict], output_path: str):
     df = df[colunas]
 
     # aba só com divergências/alertas
-    mask_sem_mov = df["status_final"].astype(str) == "SEM MOVIMENTO"
     df_div = df[
-        (~mask_sem_mov) & (
-            (df["status_final"].astype(str) != "OK") |
-            (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
-            (df["rpa_status"].astype(str) != "OK")
-        )
+        (df["status_final"].astype(str) != "OK") |
+        (df["alerta_guia"].astype(str) != "OK — apuração fechada e valores da guia conferem.") |
+        (df["rpa_status"].astype(str) != "OK")
     ].copy()
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Resumo")
         df_div.to_excel(writer, index=False, sheet_name="Divergencias")
 
+        ws_names = ["Resumo", "Divergencias"]
+
+        if comparacao_rows is not None:
+            df_comp = pd.DataFrame(comparacao_rows)
+            if df_comp.empty:
+                df_comp = pd.DataFrame(columns=[
+                    "codigoempresa_questor", "razao", "questor_guia_pis", "xlsx_valor_pis",
+                    "questor_guia_cofins", "xlsx_valor_cofins", "status_comparacao", "obs"
+                ])
+            df_comp.to_excel(writer, index=False, sheet_name="ComparacaoGuias")
+            ws_names.append("ComparacaoGuias")
+
         wb = writer.book
-        for ws_name in ["Resumo", "Divergencias"]:
+        for ws_name in ws_names:
             ws = writer.sheets[ws_name]
 
             # filtro e congelar cabeçalho
@@ -1018,13 +1116,7 @@ def _open_date_picker(parent, target_var: tk.StringVar):
     today = datetime.today()
     raw = (target_var.get() or "").strip()
     try:
-        if raw:
-            current = datetime.strptime(raw, "%Y-%m-%d")
-        else:
-            if today.month == 1:
-                current = datetime(today.year - 1, 12, 1)
-            else:
-                current = datetime(today.year, today.month - 1, 1)
+        current = datetime.strptime(raw, "%Y-%m-%d") if raw else today
     except Exception:
         current = today
 
@@ -1149,6 +1241,8 @@ def run_ui():
 
     # saída excel
     v_out_xlsx = tk.StringVar(value=RELATORIO_XLSX_PATH or "")
+    v_comp_xlsx = tk.StringVar(value=COMPARA_GUIAS_XLSX_PATH or "")
+    v_comp_habilitada = tk.BooleanVar(value=COMPARAR_GUIAS)
 
     # -----------------------------
     # Helpers UI
@@ -1231,6 +1325,8 @@ def run_ui():
         per_ini = v_per_ini.get().strip()
         per_fim = v_per_fim.get().strip()
         out_xlsx = v_out_xlsx.get().strip()
+        comp_habilitada = bool(v_comp_habilitada.get())
+        comp_xlsx = v_comp_xlsx.get().strip()
 
         if not pasta:
             messagebox.showerror("Erro", "Informe a pasta dos Livros Prefeitura.")
@@ -1271,10 +1367,19 @@ def run_ui():
             messagebox.showerror("Erro", "Informe o caminho de saída do Excel.")
             return
 
+        if comp_habilitada:
+            if not comp_xlsx:
+                messagebox.showerror("Erro", "Informe o XLSX para comparação das guias.")
+                return
+            if not os.path.isfile(comp_xlsx):
+                messagebox.showerror("Erro", "O arquivo XLSX de comparação não foi encontrado.")
+                return
+
         # aplica nos globais (somente o que a UI controla)
         global PASTA_LIVROS, RPA_RELATORIO_PATH, SUPERVISOR_XLSX_PATH
         global PERIODO_INICIAL, PERIODO_FINAL, DATAFIM_GUIA, CRM_COMPETENCIA
         global RELATORIO_XLSX_PATH
+        global COMPARAR_GUIAS, COMPARA_GUIAS_XLSX_PATH
 
         PASTA_LIVROS = pasta
         RPA_RELATORIO_PATH = rpa
@@ -1290,6 +1395,8 @@ def run_ui():
         CRM_COMPETENCIA = _competencia_mm_yyyy_from_date(per_fim)
 
         RELATORIO_XLSX_PATH = out_xlsx
+        COMPARAR_GUIAS = comp_habilitada
+        COMPARA_GUIAS_XLSX_PATH = comp_xlsx
 
         # Executa com janela de progresso
         _run_main_with_progress()
@@ -1311,7 +1418,15 @@ def run_ui():
         foreground="#555555",
     ).pack(anchor="w", pady=(4, 0))
 
-    card = ttk.Frame(container, padding=16, style="Card.TFrame")
+    notebook = ttk.Notebook(container)
+    notebook.pack(fill="both", expand=True)
+
+    tab_auditoria = ttk.Frame(notebook, style="TFrame")
+    tab_comparacao = ttk.Frame(notebook, style="TFrame")
+    notebook.add(tab_auditoria, text="Principal")
+    notebook.add(tab_comparacao, text="Comparação (Opcional)")
+
+    card = ttk.Frame(tab_auditoria, padding=16, style="Card.TFrame")
     card.pack(fill="both", expand=True)
 
     def field_row(parent, label, var, btn_text=None, btn_cmd=None):
@@ -1361,6 +1476,25 @@ def run_ui():
     # Saída
     ttk.Label(card, text="Saída", style="Label.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
     field_row(card, "Relatório Excel (.xlsx):", v_out_xlsx, "Salvar como", lambda: pick_save(v_out_xlsx))
+
+    # Aba de comparação opcional
+    card_comp = ttk.Frame(tab_comparacao, padding=16, style="Card.TFrame")
+    card_comp.pack(fill="both", expand=True)
+
+    ttk.Label(card_comp, text="Comparação de Guias", style="Label.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
+    ttk.Checkbutton(
+        card_comp,
+        text="Habilitar comparação de relatório XLSX x guias geradas",
+        variable=v_comp_habilitada,
+    ).pack(anchor="w", pady=(0, 8))
+    field_row(card_comp, "Relatório XLSX para comparar:", v_comp_xlsx, "Selecionar", lambda: pick_file(v_comp_xlsx, [("Excel", "*.xlsx")]))
+
+    ttk.Label(
+        card_comp,
+        text="A comparação considera somente empresas com status OK (sem alertas/problemas) e compara PIS (8109) e COFINS (2172).",
+        style="Label.TLabel",
+        foreground="#666666",
+    ).pack(anchor="w", pady=(10, 0))
 
     # Botões
     btns = ttk.Frame(container)
@@ -1551,12 +1685,6 @@ def main():
             esperado_pis = calc["pis_liquido"]
             esperado_cofins = calc["cofins_liquido"]
 
-            guia_valor_baixo_total = (esperado_pis + esperado_cofins).quantize(Decimal("0.01"))
-            if Decimal("0.00") < guia_valor_baixo_total < Decimal("10.00"):
-                guia_valor_baixo_acumulo = True
-                if "GUIA_VALOR_BAIXO_POSSIVEL_ACUMULO" not in guia_divergencias:
-                    guia_divergencias.append("GUIA_VALOR_BAIXO_POSSIVEL_ACUMULO")
-
             if questor_ok:
                 guia_pis = to_dec(questor_row.get("guia_pis_debito"))
                 guia_cofins = to_dec(questor_row.get("guia_cofins_debito"))
@@ -1565,8 +1693,6 @@ def main():
 
                 print(f"    Guia no Questor: PIS={moeda(guia_pis)} | COFINS={moeda(guia_cofins)}")
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
-                if guia_valor_baixo_acumulo:
-                    print(f"    ALERTA_GUIA: valor total esperado da guia ({moeda(guia_valor_baixo_total)}) é maior que 0 e menor que 10. Verificar mês anterior para possível acúmulo.")
 
                 diverg = []
                 if not diff_ok(guia_pis, esperado_pis, TOLERANCIA_VALOR):
@@ -1595,8 +1721,6 @@ def main():
                     guia_divergencias.append("APURACAO_PISCOFINS_ABERTA")
 
                 print(f"    Esperado a pagar: PIS={moeda(esperado_pis)} | COFINS={moeda(esperado_cofins)}")
-                if guia_valor_baixo_acumulo:
-                    print(f"    ALERTA_GUIA: valor total esperado da guia ({moeda(guia_valor_baixo_total)}) é maior que 0 e menor que 10. Verificar mês anterior para possível acúmulo.")
                 alerta_guia_text = "Não foi possível consultar a guia no Questor (sem dados/erro)."
                 print(f"    ALERTA_GUIA: {alerta_guia_text}")
                 if int(apuracao_fechada) == 0:
@@ -1605,47 +1729,22 @@ def main():
 
         # >>> ALERTA FINAL
         alerta = build_alerta_final(livro_row, crm_row, questor_row)
-        sem_movimento_rpa = is_rpa_sem_movimento(rpa_row)
 
         divergencias_completas = list(alerta["Divergencias"])
         for d in guia_divergencias:
             if d not in divergencias_completas:
                 divergencias_completas.append(d)
 
-        rpa_status_norm = normalize_text(str(rpa_row.get("Status", ""))).lower() if rpa_row else "sem registro"
+        status_final = "DIVERGENTE" if divergencias_completas else alerta["StatusFinal"]
 
         print("  ALERTA FINAL:")
-        if sem_movimento_rpa:
-            status_final = "SEM MOVIMENTO"
-            divergencias_finais = "-"
-            print(f"    StatusFinal={status_final}")
-            print("    Divergencias=-")
-            print("    Observação=Empresa sem movimento conforme RPA.")
-        elif rpa_status_norm == "alerta":
-            status_final = "ALERTA"
-            divergencias_finais = ", ".join(rpa_row.get("Alertas", [])) if rpa_row and rpa_row.get("Alertas") else "RPA_STATUS_ALERTA"
-            print(f"    StatusFinal={status_final}")
-            print(f"    Divergencias={divergencias_finais}")
-            print("    Observação=Status final priorizado pelo RPA com ALERTA.")
-        elif not rpa_row:
-            status_final = "SEM REGISTRO"
-            divergencias_finais = "RPA_SEM_REGISTRO"
-            print(f"    StatusFinal={status_final}")
-            print(f"    Divergencias={divergencias_finais}")
-            print("    Observação=Status final priorizado pelo RPA sem registro.")
+        print(f"    StatusFinal={status_final}")
+        if divergencias_completas:
+            print(f"    Divergencias={', '.join(divergencias_completas)}")
         else:
-            if alerta["StatusFinal"] == "SEM_DADOS":
-                status_final = "DIVERGENTE"
-            else:
-                status_final = "DIVERGENTE" if divergencias_completas else alerta["StatusFinal"]
+            print("    Divergencias=-")
 
-            print(f"    StatusFinal={status_final}")
-            if divergencias_completas:
-                print(f"    Divergencias={', '.join(divergencias_completas)}")
-            else:
-                print("    Divergencias=-")
-
-            divergencias_finais = ", ".join(divergencias_completas) if divergencias_completas else "-"
+        divergencias_finais = ", ".join(divergencias_completas) if divergencias_completas else "-"
 
         # linha para Excel (didático)
         questor_ok_for_export = (questor_row and isinstance(questor_row, dict) and not questor_row.get("_erro_http"))
@@ -1708,8 +1807,14 @@ def main():
 
         print("")
 
-    # Exporta Excel (Resumo + Divergencias)
-    exportar_relatorio_excel(report_rows, RELATORIO_XLSX_PATH)
+    comparacao_rows = None
+    if COMPARAR_GUIAS:
+        print("[6/6] Gerando comparação opcional de guias (XLSX externo x Questor)...")
+        comparacao_rows = montar_comparacao_guias(report_rows, COMPARA_GUIAS_XLSX_PATH)
+        print(f"  Empresas comparadas (somente status OK): {len(comparacao_rows)}")
+
+    # Exporta Excel (Resumo + Divergencias + Comparacao opcional)
+    exportar_relatorio_excel(report_rows, RELATORIO_XLSX_PATH, comparacao_rows)
 
     print("[6/6] FIM.")
 
