@@ -977,8 +977,12 @@ def montar_comparacao_guias(report_rows: list[dict], xlsx_path: str) -> list[dic
         else:
             xlsx_pis = Decimal("0.00")
             xlsx_cofins = Decimal("0.00")
-            status_comp = "SEM_DADOS_XLSX"
-            obs = "Empresa não encontrada no XLSX de comparação"
+            if esperado_pis == Decimal("0.00") and esperado_cofins == Decimal("0.00"):
+                status_comp = "SEM_GUIA_VALORES_ZERADOS"
+                obs = "Empresa não encontrada no XLSX e sem valores de PIS/COFINS no módulo (guia não esperada)."
+            else:
+                status_comp = "GUIA_NAO_ENCONTRADA_XLSX"
+                obs = "Empresa não encontrada no XLSX de comparação, embora haja valores de guia esperados no Questor."
 
         comparacao.append({
             "codigoempresa_questor": codigoempresa,
