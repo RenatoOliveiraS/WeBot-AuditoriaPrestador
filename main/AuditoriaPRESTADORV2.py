@@ -1018,7 +1018,13 @@ def _open_date_picker(parent, target_var: tk.StringVar):
     today = datetime.today()
     raw = (target_var.get() or "").strip()
     try:
-        current = datetime.strptime(raw, "%Y-%m-%d") if raw else today
+        if raw:
+            current = datetime.strptime(raw, "%Y-%m-%d")
+        else:
+            if today.month == 1:
+                current = datetime(today.year - 1, 12, 1)
+            else:
+                current = datetime(today.year, today.month - 1, 1)
     except Exception:
         current = today
 
